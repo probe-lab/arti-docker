@@ -1,0 +1,160 @@
+# Builds the arti image for linux/amd64 + linux/arm64 on native runners,
+# then merges per-arch digests into a single multi-arch manifest tagged
+# `arti-${ARTI_VERSION}-${SHORT_SHA}` (e.g. `2.3.0-a1b2c3d`) on both ECR and GHCR.
+#
+# AWS auth uses GitHub OIDC against the role configured below. GHCR uses the
+# workflow's GITHUB_TOKEN with `packages: write`.
+
+name: build-and-push
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      arti_version:
+        description: "Override ARTI version (defaults to value baked into the workflow)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # AWS OIDC
+  packages: write # GHCR push
+
+env:
+  ARTI_VERSION: ${{ inputs.arti_version || '2.3.0' }}
+  RUST_VERSION: "1.94"
+  AWS_REGION: us-east-1
+  AWS_IAM_ROLE_ARN: arn:aws:iam::019120760881:role/prod-use1-github-oidc-role
+  ECR_IMAGE: 019120760881.dkr.ecr.us-east-1.amazonaws.com/probelab
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute lowercase GHCR image name
+        id: names
+        run: echo "ghcr_image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ env.ARTI_VERSION }}
+            RUST_VERSION=${{ env.RUST_VERSION }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+          outputs: |
+            type=image,name=${{ env.ECR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+            type=image,name=${{ steps.names.outputs.ghcr_image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: merge multi-arch manifest
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          TAG="arti-${ARTI_VERSION}-${SHORT_SHA}"
+
+          GHCR_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          for image in "$ECR_IMAGE" "$GHCR_IMAGE"; do
+            echo "Pushing $image:$TAG"
+            docker buildx imagetools create \
+              --tag "${image}:${TAG}" \
+              $(printf "${image}@sha256:%s " *)
+          done
+
+          echo "Pushed tag: ${TAG}"
+
+      - name: Summary
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          TAG="${ARTI_VERSION}-${SHORT_SHA}"
+          {
+            echo "### Pushed image tags"
+            echo ""
+            echo "- \`${ECR_IMAGE}:${TAG}\`"
+            echo "- \`ghcr.io/${GITHUB_REPOSITORY,,}:${TAG}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
