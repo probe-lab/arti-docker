@@ -54,15 +54,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -74,7 +65,7 @@ jobs:
         id: names
         run: echo "ghcr_image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push by digest
+      - name: Build and push by digest to GHCR
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -85,9 +76,7 @@ jobs:
             RUST_VERSION=${{ env.RUST_VERSION }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
-          outputs: |
-            type=image,name=${{ env.ECR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
-            type=image,name=${{ steps.names.outputs.ghcr_image }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.names.outputs.ghcr_image }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
@@ -134,7 +123,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create multi-arch manifest and push
+      - name: Create multi-arch manifest and push to both registries
         working-directory: /tmp/digests
         run: |
           set -euo pipefail
@@ -143,12 +132,12 @@ jobs:
 
           GHCR_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
 
-          for image in "$ECR_IMAGE" "$GHCR_IMAGE"; do
-            echo "Pushing $image:$TAG"
-            docker buildx imagetools create \
-              --tag "${image}:${TAG}" \
-              $(printf "${image}@sha256:%s " *)
-          done
+          # Sources are GHCR digests; targets are both registries.
+          # imagetools copies blobs across registries as needed.
+          docker buildx imagetools create \
+            --tag "${GHCR_IMAGE}:${TAG}" \
+            --tag "${ECR_IMAGE}:${TAG}" \
+            $(printf "${GHCR_IMAGE}@sha256:%s " *)
 
           echo "Pushed tag: ${TAG}"
 
