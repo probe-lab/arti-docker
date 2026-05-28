@@ -10,6 +10,10 @@ name: build-and-push
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
     inputs:
       arti_version:
