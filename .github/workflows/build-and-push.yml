@@ -11,9 +11,9 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - '**.md'
-      - 'LICENSE'
-      - '.gitignore'
+      - "**.md"
+      - "LICENSE"
+      - ".gitignore"
   workflow_dispatch:
     inputs:
       arti_version:
@@ -144,7 +144,7 @@ jobs:
       - name: Summary
         run: |
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          TAG="${ARTI_VERSION}-${SHORT_SHA}"
+          TAG="arti-${ARTI_VERSION}-${SHORT_SHA}"
           {
             echo "### Pushed image tags"
             echo ""
