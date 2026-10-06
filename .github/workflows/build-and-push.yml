@@ -27,8 +27,8 @@ permissions:
   packages: write # GHCR push
 
 env:
-  ARTI_VERSION: ${{ inputs.arti_version || '2.3.0' }}
-  RUST_VERSION: "1.94"
+  ARTI_VERSION: ${{ inputs.arti_version || '2.7.0' }}
+  RUST_VERSION: "1.99"
   AWS_REGION: us-east-1
   AWS_IAM_ROLE_ARN: arn:aws:iam::019120760881:role/prod-use1-github-oidc-role
   ECR_IMAGE: 019120760881.dkr.ecr.us-east-1.amazonaws.com/probelab
