@@ -18,7 +18,7 @@ RUN apk add --no-cache \
 RUN git clone https://gitlab.torproject.org/tpo/core/arti.git . \
  && git checkout "arti-v${VERSION}"
 
-RUN cargo build -p arti --release --locked --features=onion-service-service \
+RUN cargo build -p arti --release --locked --features=onion-service-service,http-connect \
  && strip target/release/arti
 
 FROM alpine:latest AS runner
